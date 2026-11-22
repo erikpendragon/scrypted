@@ -7,6 +7,14 @@ function writeUInt24BE(buffer: Buffer, value: number, offset: number): void {
   buffer[offset + 2] = value & 0xFF;
 }
 
+/**
+ * Some cameras (e.g. Reolink) carry credentials in the RTMP play path query
+ * (?user=...&password=...). Mask those values before the path is logged.
+ */
+export function redactPlayPath(playPath: string): string {
+  return playPath.replace(/([?&](?:user|username|password|pass|pwd|token)=)[^&]*/gi, '$1***');
+}
+
 // Constants
 const HANDSHAKE_SIZE = 1536;
 const RTMP_VERSION = 3;
@@ -145,7 +153,7 @@ export class RtmpClient {
     const streamName = parts.length > 2 ? parts.slice(2).join('/') : '';
     const playPath = streamName + parsedUrl.search;
 
-    this.console?.log('Sending play command with path:', playPath);
+    this.console?.log('Sending play command with path:', redactPlayPath(playPath));
     this.sendPlay(this.streamId, playPath);
 
     this.console?.log('Sending setBufferLength...');

@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { Socket } from 'node:net';
 import { test, TestContext } from 'node:test';
-import { RtmpClient } from '../src/rtmp-client';
+import { RtmpClient, redactPlayPath } from '../src/rtmp-client';
 
 function makeClient(t: TestContext, onConnect: (socket: Socket, connected: () => void) => void) {
   const client = new RtmpClient('rtmp://example.invalid/live/test');
@@ -70,4 +70,12 @@ test('closing the socket during the handshake still rejects setup', async t => {
     return true;
   }) as Socket['write'];
   await assert.rejects(bounded(client.setup()), /stream ended/);
+});
+
+test('redactPlayPath masks credentials in the play path query', () => {
+  assert.equal(
+    redactPlayPath('channel0_main.bcs?channel=0&stream=0&user=someuser&password=example'),
+    'channel0_main.bcs?channel=0&stream=0&user=***&password=***',
+  );
+  assert.equal(redactPlayPath('live/test'), 'live/test');
 });
