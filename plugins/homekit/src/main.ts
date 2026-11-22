@@ -85,7 +85,7 @@ export class HomeKitPlugin extends ScryptedDeviceBase implements MixinProvider, 
         advertiserAddresses: {
             group: 'Network',
             title: 'mDNS Interfaces',
-            description: 'Optional: Change the address or interfaces that will advertise the HomeKit bridge and accessories.',
+            description: 'Optional: Change the address or interfaces that will advertise the HomeKit bridge and accessories. With the avahi advertiser, Default listens on all addresses.',
             placeholder: '192.168.2.111, en0, etc.',
             combobox: true,
             choices: [
@@ -441,6 +441,12 @@ export class HomeKitPlugin extends ScryptedDeviceBase implements MixinProvider, 
 
     async getAdvertiserInterfaceBind() {
         let bind: string = this.storageSettings.values.advertiserAddresses;
+        // avahi publishes the host's own A and AAAA records no matter what bind is set,
+        // so hubs may dial an IPv6 address. Restricting the HAP server to the
+        // Scrypted server address (usually IPv4 only) then makes pair-verify time out.
+        // With avahi and no explicit choice, listen on all addresses.
+        if ((!bind || bind === 'Default') && this.getAdvertiser() === MDNSAdvertiser.AVAHI)
+            bind = 'All Addresses';
         if (bind === 'All Addresses')
             bind = undefined;
         else if (!bind || bind === 'Default' || bind === 'Server Address')
