@@ -204,12 +204,27 @@ addSupportedType({
                 tiers => createHomeKitWebRTCDelegate(systemManager.getDeviceById<RTCSignalingChannel>(device.id), console, selectHomeKitRemoteTier(tiers)),
                 device.resolution,
                 {
-                    state: {
-                        load: () => JSON.parse(storage.getItem('hksv3CmafUploadState') || '{}'),
-                        save: state => storage.setItem('hksv3CmafUploadState', JSON.stringify(state)),
+                    userAgent: () => ({
+                        software: `Scrypted-HomeKit-${packageJson.version}`,
+                        vendor: device.info?.manufacturer || 'unknown',
+                        model: device.info?.model || 'unknown',
+                        firmwareVersion: device.info?.firmware || 'unknown',
+                    }),
+                    // Earlier uploaders numbered their sessions themselves and the bundled
+                    // library did not persist a session number, so start well above them:
+                    // a reused number would land in a session the publishing point already holds.
+                    minimumSessionNumber: () => {
+                        let next = 1000;
+                        try {
+                            const saved = JSON.parse(storage.getItem('hksv3CmafUploadState') || '{}').next;
+                            if (typeof saved === 'number')
+                                next = Math.max(next, saved);
+                        }
+                        catch {
+                        }
+                        return BigInt(next);
                     },
-                    userAgent: `HKSV/3.0 Scrypted-HomeKit/${packageJson.version} (${[device.info?.manufacturer, device.info?.model, device.info?.firmware]
-                        .map(value => (value || 'unknown').replace(/[;()]/g, ' ')).join('; ')})`,
+                    encrypt: () => storage.getItem('hksv3Encrypt') !== 'false',
                 })
             : new CameraController({
                 cameraStreamCount: 8,

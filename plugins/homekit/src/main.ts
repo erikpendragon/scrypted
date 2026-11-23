@@ -49,9 +49,9 @@ const hapStorage: Storage = {
     persistSync() {
     }
 }
-HAPStorage.storage = () => {
+HAPStorage.storage = (() => {
     return hapStorage;
-}
+}) as any;
 
 const { systemManager, deviceManager } = sdk;
 

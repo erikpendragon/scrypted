@@ -2,7 +2,15 @@ import { Accessory, AudioBitrate, AudioRecordingCodecType, AudioRecordingSampler
 import type { createMultiTierRtpDelegate } from './camera-multitier-rtp';
 import type { createHomeKitWebRTCDelegate } from './camera-webrtc';
 import type { CMAFSegment } from '../../hap';
-import { CMAFUploadState, HKSV3CMAFUploader } from './hksv3-cmaf-upload';
+import type { SecureVideoUserAgent } from '../../hap';
+
+export interface SecureVideoUploadOptions {
+    userAgent: () => SecureVideoUserAgent;
+    /** the lowest CMAF session number to use next, see the controller's ingest options */
+    minimumSessionNumber?: () => bigint;
+    /** false uploads clips in the clear */
+    encrypt?: () => boolean;
+}
 
 // CMAF direct upload: current hubs refuse to enable "Stream & Record" for an
 // HKSV3 camera that does not expose the CMAF services
@@ -24,7 +32,7 @@ export function createSecureVideoController(accessory: Accessory,
     createRtpDelegate: (tiers: SecureVideoVideoTier[]) => ReturnType<typeof createMultiTierRtpDelegate>,
     createWebRTCDelegate?: (tiers: SecureVideoVideoTier[]) => ReturnType<typeof createHomeKitWebRTCDelegate>,
     resolution?: number[],
-    cmaf?: { state: CMAFUploadState; userAgent: string }) {
+    upload?: SecureVideoUploadOptions) {
     const encoding = (width: number, height: number, targetAverageBitrate: number, peakBitrate: number) =>
         ({ width, height, frameRate: 30, targetAverageBitrate, peakBitrate });
     const families = [
@@ -86,10 +94,14 @@ export function createSecureVideoController(accessory: Accessory,
     };
 
     let recordingConfigured = false;
+    // pre-motion: the hub's selected prebuffer length is kept before the start of each upload
+    let preRoll = FALLBACK_RECORDING_CONFIGURATION.prebufferLength;
     let nextClipStreamId = 880000;
     const updateRecordingConfiguration = recordingDelegate.updateRecordingConfiguration.bind(recordingDelegate);
     recordingDelegate.updateRecordingConfiguration = configuration => {
         recordingConfigured = !!configuration;
+        if (configuration?.prebufferLength)
+            preRoll = configuration.prebufferLength;
         return updateRecordingConfiguration(configuration);
     };
 
@@ -167,7 +179,13 @@ export function createSecureVideoController(accessory: Accessory,
             },
             delegate: recordingDelegate,
         },
-        ingest: secureVideoCmafEnabled ? {
+        ingest: secureVideoCmafEnabled && upload ? {
+            userAgent: upload.userAgent,
+            muxed: true,
+            encrypt: upload.encrypt,
+            preRoll: () => preRoll,
+            minimumSessionNumber: upload.minimumSessionNumber,
+            log: message => console.log('HKSV3', message),
             delegate: {
                 // Clip production reuses the classic HKSV fragmented MP4 recording
                 // generator: the first fragment (ftyp+moov) is the init segment,
@@ -238,16 +256,6 @@ export function createSecureVideoController(accessory: Accessory,
     const configureServices = controller.configureServices.bind(controller);
     controller.configureServices = () => {
         configureServices();
-        // The bundled HAP CMAFIngest uploads AES-GCM wrapped, split renditions,
-        // which Apple's ingest rejects (HTTP 400) or plays black. Swap in the
-        // uploader that follows the recipe Apple accepts, reusing HAP's context
-        // (credentials, sensor id, event reporting).
-        const bundledIngest = (controller as any).cmafIngest;
-        if (cmaf && bundledIngest?.context) {
-            bundledIngest.destroy?.();
-            (controller as any).cmafIngest = new HKSV3CMAFUploader(
-                (controller as any).options.ingest.delegate, bundledIngest.context, cmaf.state, cmaf.userAgent, console);
-        }
         controller.multiTierStreamManagementService.getCharacteristic(Characteristic.StatusActive)
             .on('change', change => { if (!change.newValue) rtpDelegate.stopAll(); });
         const checkWebRTCStreaming = () => {
