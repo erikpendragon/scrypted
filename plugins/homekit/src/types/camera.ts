@@ -4,14 +4,13 @@ import { createCameraStorageSettings } from '../camera-mixin';
 import { DummyDevice, addSupportedType, bindCharacteristic } from '../common';
 import { AudioRecordingCodec, AudioRecordingCodecType, AudioRecordingSamplerate, AudioStreamingCodec, AudioStreamingCodecType, AudioStreamingSamplerate, CameraController, CameraRecordingConfiguration, CameraRecordingDelegate, CameraRecordingOptions, CameraStreamingOptions, Characteristic, CharacteristicEventTypes, H264Level, H264Profile, MediaContainerType, RecordingPacket, SRTPCryptoSuites, SecureVideoController, Service, VideoCodecType, WithUUID } from '../hap';
 import type { HomeKitPlugin } from '../main';
-import { setServiceName } from '../service-names';
 import { createMultiTierRtpDelegate } from './camera/camera-multitier-rtp';
 import { handleFragmentsRequests, iframeIntervalSeconds } from './camera/camera-recording';
 import { createSecureVideoController, secureVideoCmafEnabled } from './camera/camera-secure-video';
 import { createCameraStreamingDelegate } from './camera/camera-streaming';
 import { FORCE_OPUS } from './camera/camera-utils';
 import { createHomeKitWebRTCDelegate } from './camera/camera-webrtc';
-import { makeAccessory, mergeLockDevices, mergeOnOffDevicesByType } from './common';
+import { makeAccessory, mergeOnOffDevicesByType } from './common';
 
 const { deviceManager, systemManager } = sdk;
 
@@ -234,7 +233,6 @@ addSupportedType({
             const motionDetected = () => !!motionDevice.motionDetected;
 
             const { motionService } = controller;
-            setServiceName(motionService, `${device.name} Motion`);
             bindCharacteristic(motionDevice,
                 ScryptedInterface.MotionSensor,
                 motionService,
@@ -291,11 +289,6 @@ addSupportedType({
 
             // merge in sirens
             mergeOnOffDevicesByType(device as ScryptedDevice as ScryptedDevice & DeviceProvider, accessory, ScryptedDeviceType.Siren).devices.forEach(device => {
-                homekitPlugin.mergedDevices.add(device.id)
-            });
-
-            // merge in locks, such as the door opener of a doorbell
-            mergeLockDevices(device as ScryptedDevice as ScryptedDevice & DeviceProvider, accessory).devices.forEach(device => {
                 homekitPlugin.mergedDevices.add(device.id)
             });
         }

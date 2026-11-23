@@ -11,7 +11,6 @@ import { Accessory, Bridge, Categories, Characteristic, ControllerStorage, HAPSt
 import { createHAPUsernameStorageSettingsDict, getRandomPort as createRandomPort, getHAPUUID, logConnections, typeToCategory } from './hap-utils';
 import { HOMEKIT_MIXIN, HomekitMixin } from './homekit-mixin';
 import { addAccessoryDeviceInfo } from './info';
-import { checkMulticastSend } from './multicast-check';
 import { randomPinCode } from './pincode';
 import './types';
 import { VIDEO_CLIPS_NATIVE_ID } from './types/camera/camera-recording-files';
@@ -207,16 +206,14 @@ export class HomeKitPlugin extends ScryptedDeviceBase implements MixinProvider, 
         // their children, so a reordering is necessary
         const reorderedDeviceIds = reorderDevicesByProvider(deviceIds);
 
-        // safety checks in case something went wrong. do not throw here, as
-        // that would prevent the bridge from being published at all. a device
-        // missing from the reordered list will simply not be exposed to HomeKit.
+        // safety checks in case something went wrong
         if (deviceIds.length !== reorderedDeviceIds.length) {
-            this.log.w(`error in device reordering, expected ${deviceIds.length} devices but only got ${reorderedDeviceIds.length}!`);
+            throw Error(`error in device reordering, expected ${deviceIds.length} devices but only got ${reorderedDeviceIds.length}!`);
         }
         const uniqueDeviceIds = new Set<string>(deviceIds);
         const uniqueReorderedIds = new Set<string>(reorderedDeviceIds);
         if (uniqueDeviceIds.size !== uniqueReorderedIds.size) {
-            this.log.w(`error in device reordering, expected ${uniqueDeviceIds.size} unique devices but only got ${uniqueReorderedIds.size} entries!`);
+            throw Error(`error in device reordering, expected ${uniqueDeviceIds.size} unique devices but only got ${uniqueReorderedIds.size} entries!`);
         }
 
         const autoAdd = this.storageSettings.values.autoAdd ?? true;
@@ -368,15 +365,6 @@ export class HomeKitPlugin extends ScryptedDeviceBase implements MixinProvider, 
 
         const bind = await this.getAdvertiserInterfaceBind();
         this.console.log('mdns bind address', bind);
-
-        if (process.platform === 'darwin') {
-            checkMulticastSend().then(e => {
-                if (e?.code !== 'EHOSTUNREACH')
-                    return;
-                this.console.error('mDNS multicast send failed', e);
-                this.log.a('macOS Local Network privacy is blocking mDNS, so HomeKit accessories can not be discovered or paired. Ensure Scrypted is running with the signed Node.js installer from nodejs.org (not Homebrew) and that "node" is allowed in System Settings > Privacy & Security > Local Network.');
-            });
-        }
 
         const publishInfo: PublishInfo = {
             username,

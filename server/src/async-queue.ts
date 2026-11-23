@@ -43,8 +43,6 @@ export function createAsyncQueue<T>() {
 
         if (ended)
             throw ended;
-
-        return undefined;
     }
 
     const submit = (item: T, dequeued?: Deferred<void>, signal?: AbortSignal) => {
@@ -187,3 +185,57 @@ export function createAsyncQueueFromGenerator<T>(generator: AsyncGenerator<T>) {
 
     return q;
 }
+
+// async function testSlowEnqueue() {
+//     const asyncQueue = createAsyncQueue<number>();
+
+//     asyncQueue.submit(-1);
+//     asyncQueue.submit(-1);
+//     asyncQueue.submit(-1);
+//     asyncQueue.submit(-1);
+
+//     (async () => {
+//         console.log('go');
+//         for (let i = 0; i < 10; i++) {
+//             asyncQueue.submit(i);
+//             await sleep(100);
+//         }
+//         asyncQueue.end(new Error('fail'));
+//     })();
+
+
+//     const runQueue = async (str?: string) => {
+//         for await (const n of asyncQueue.queue) {
+//             console.log(str, n);
+//         }
+//     }
+
+//     runQueue('start');
+
+//     setTimeout(runQueue, 400);
+// }
+
+
+
+// async function testSlowDequeue() {
+//     const asyncQueue = createAsyncQueue<number>();
+
+//     const runQueue = async (str?: string) => {
+//         for await (const n of asyncQueue.queue) {
+//             await sleep(100);
+//         }
+//     }
+
+//     runQueue()
+//     .catch(e => console.error('queue threw', e));
+
+//     console.log('go');
+//     for (let i = 0; i < 10; i++) {
+//         console.log(await asyncQueue.enqueue(i));
+//         console.log(i);
+//     }
+//     asyncQueue.end(new Error('fail'));
+//     console.log(await asyncQueue.enqueue(555));
+// }
+
+// testSlowDequeue();
