@@ -8,6 +8,7 @@ import { createMultiTierRtpDelegate } from './camera/camera-multitier-rtp';
 import { handleFragmentsRequests, iframeIntervalSeconds } from './camera/camera-recording';
 import { createSecureVideoController, secureVideoCmafEnabled } from './camera/camera-secure-video';
 import { createCameraStreamingDelegate } from './camera/camera-streaming';
+import { syncReolinkZones } from './camera/camera-zones-reolink';
 import { FORCE_OPUS } from './camera/camera-utils';
 import { createHomeKitWebRTCDelegate, selectHomeKitRemoteTier } from './camera/camera-webrtc';
 import packageJson from '../../package.json';
@@ -251,6 +252,7 @@ addSupportedType({
             console.log('HomeKit Secure Video 3 multi-tier RTP, SFrame WebRTC, and HDS recording enabled.');
             if (secureVideoCmafEnabled)
                 console.log('HomeKit Secure Video 3 CMAF clip upload enabled.');
+            syncReolinkZones(device, controller, storage, console);
             // logSecureVideoRequests(accessory, controller, console);
         }
 
