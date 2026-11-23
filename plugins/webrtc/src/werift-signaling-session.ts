@@ -1,6 +1,7 @@
 import { RTCIceCandidate, RTCPeerConnection } from "./werift";
 import { RTCAVSignalingSetup, RTCSignalingOptions, RTCSignalingSendIceCandidate, RTCSignalingSession } from '@scrypted/sdk';
 import { createRawResponse } from "./werift-util";
+import { replayEarlyDtlsRecords } from "./werift-early-dtls";
 import { sleep } from "@scrypted/common/src/sleep";
 import ip from 'ip';
 
@@ -44,6 +45,7 @@ export class WeriftSignalingSession implements RTCSignalingSession {
                 offer = (await this.pc.setLocalDescription(offer)).toJSON();
             else
                 this.pc.setLocalDescription(offer);
+            replayEarlyDtlsRecords(this.pc, this.console);
             ret = createRawResponse(offer);
         }
         else {
