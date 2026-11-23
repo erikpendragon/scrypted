@@ -2,16 +2,29 @@ import { Accessory, AudioBitrate, AudioRecordingCodecType, AudioRecordingSampler
 import type { createMultiTierRtpDelegate } from './camera-multitier-rtp';
 import type { createHomeKitWebRTCDelegate } from './camera-webrtc';
 import type { CMAFSegment } from '../../hap';
+import { CMAFUploadState, HKSV3CMAFUploader } from './hksv3-cmaf-upload';
 
-// Toggle and redeploy HomeKit to advertise the experimental CMAF services.
-export const secureVideoCmafEnabled = false;
+// CMAF direct upload: current hubs refuse to enable "Stream & Record" for an
+// HKSV3 camera that does not expose the CMAF services
+// ("Camera HAP service not found: Camera Client Certificate Management").
+export const secureVideoCmafEnabled = true;
+
+// Used until the hub writes a recording configuration.
+const FALLBACK_RECORDING_CONFIGURATION: any = {
+    prebufferLength: 8000,
+    eventTriggerTypes: [1],
+    mediaContainerConfiguration: { type: MediaContainerType.FRAGMENTED_MP4, fragmentLength: 4000 },
+    videoCodec: { type: VideoCodecType.H264, parameters: { profile: 1, level: 2, bitRate: 2000, iFrameInterval: 4000 }, resolution: [1920, 1080, 30] },
+    audioCodec: { type: AudioRecordingCodecType.AAC_LC, audioChannels: 1, samplerate: AudioRecordingSamplerate.KHZ_32, bitrate: 64 },
+};
 
 export function createSecureVideoController(accessory: Accessory,
     snapshot: CameraStreamingDelegate['handleSnapshotRequest'], console: Console,
     recordingDelegate: CameraRecordingDelegate,
     createRtpDelegate: (tiers: SecureVideoVideoTier[]) => ReturnType<typeof createMultiTierRtpDelegate>,
     createWebRTCDelegate?: (tiers: SecureVideoVideoTier[]) => ReturnType<typeof createHomeKitWebRTCDelegate>,
-    resolution?: number[]) {
+    resolution?: number[],
+    cmaf?: { state: CMAFUploadState; userAgent: string }) {
     const encoding = (width: number, height: number, targetAverageBitrate: number, peakBitrate: number) =>
         ({ width, height, frameRate: 30, targetAverageBitrate, peakBitrate });
     const families = [
@@ -70,6 +83,14 @@ export function createSecureVideoController(accessory: Accessory,
         const message = `HomeKit Secure Video 3 ${operation} is not implemented yet.`;
         console.log(message);
         throw new Error(message);
+    };
+
+    let recordingConfigured = false;
+    let nextClipStreamId = 880000;
+    const updateRecordingConfiguration = recordingDelegate.updateRecordingConfiguration.bind(recordingDelegate);
+    recordingDelegate.updateRecordingConfiguration = configuration => {
+        recordingConfigured = !!configuration;
+        return updateRecordingConfiguration(configuration);
     };
 
     const motionService = accessory.addService(Service.MotionSensor, 'Motion Sensor');
@@ -146,42 +167,54 @@ export function createSecureVideoController(accessory: Accessory,
             },
             delegate: recordingDelegate,
         },
-        // Advertise CMAF for observing hub provisioning and motion-triggered
-        // commands. Clip production remains deliberately unimplemented.
         ingest: secureVideoCmafEnabled ? {
             delegate: {
+                // Clip production reuses the classic HKSV fragmented MP4 recording
+                // generator: the first fragment (ftyp+moov) is the init segment,
+                // the rest (moof+mdat) are media segments.
                 async *streamClip(request): AsyncGenerator<CMAFSegment> {
-                    console.log('HSV3 CMAF streamClip:', {
-                        cmafSessionId: request.cmafSessionId.toString(),
-                        command: request.command.command,
-                        start: request.command.start?.toString(),
-                        stop: request.command.stop?.toString(),
-                        stopAction: request.command.stopAction,
-                        aborted: request.signal.aborted,
-                    });
-                    notImplemented('CMAF clip production');
+                    if (!recordingConfigured) {
+                        console.log('HKSV3 clip: no recording configuration from the hub yet, using fallback');
+                        updateRecordingConfiguration(FALLBACK_RECORDING_CONFIGURATION);
+                    }
+                    const streamId = nextClipStreamId++;
+                    const generator = recordingDelegate.handleRecordingStreamRequest(streamId);
+                    let count = 0;
+                    try {
+                        for await (const packet of generator) {
+                            const last = !!packet.isLast || request.signal.aborted;
+                            if (count++ === 0) {
+                                yield { type: 'init', data: packet.data };
+                                continue;
+                            }
+                            yield { type: 'media', data: packet.data, last };
+                            if (last)
+                                break;
+                        }
+                    }
+                    finally {
+                        try {
+                            recordingDelegate.closeRecordingStream(streamId, 0);
+                        }
+                        catch {
+                        }
+                        await generator.return(undefined).catch(() => { });
+                    }
                 },
-                handleBufferActivity(request) {
-                    console.log('HSV3 CMAF buffer activity (buffer management not implemented):', {
-                        start: request.start.toString(),
-                        durationMs: request.duration.toString(),
-                        activity: request.activity,
-                    });
+                handleBufferActivity() {
                 },
                 updateRecordingActive(active, audioActive) {
-                    console.log('HSV3 CMAF recording active:', { active, audioActive });
+                    console.log('HKSV3 recording active:', { active, audioActive });
                 },
                 updatePublishingPoint(publishingPoint) {
-                    console.log('HSV3 CMAF publishing point:', {
-                        configured: !!publishingPoint,
-                        serverCACertificateCount: publishingPoint?.serverCACertificates.length ?? 0,
-                    });
+                    console.log('HKSV3 publishing point configured:', !!publishingPoint);
                 },
                 updateClientCertificate(installed) {
-                    console.log('HSV3 CMAF client certificate:', { installed });
+                    console.log('HKSV3 client certificate installed:', installed);
                 },
                 handleUploadResult(cmafSessionId, error, detail) {
-                    console.log('HSV3 CMAF upload result:', { cmafSessionId: cmafSessionId.toString(), error, detail });
+                    if (error)
+                        console.log('HKSV3 upload result:', { cmafSessionId: cmafSessionId.toString(), error, detail });
                 },
             },
         } : undefined,
@@ -205,6 +238,16 @@ export function createSecureVideoController(accessory: Accessory,
     const configureServices = controller.configureServices.bind(controller);
     controller.configureServices = () => {
         configureServices();
+        // The bundled HAP CMAFIngest uploads AES-GCM wrapped, split renditions,
+        // which Apple's ingest rejects (HTTP 400) or plays black. Swap in the
+        // uploader that follows the recipe Apple accepts, reusing HAP's context
+        // (credentials, sensor id, event reporting).
+        const bundledIngest = (controller as any).cmafIngest;
+        if (cmaf && bundledIngest?.context) {
+            bundledIngest.destroy?.();
+            (controller as any).cmafIngest = new HKSV3CMAFUploader(
+                (controller as any).options.ingest.delegate, bundledIngest.context, cmaf.state, cmaf.userAgent, console);
+        }
         controller.multiTierStreamManagementService.getCharacteristic(Characteristic.StatusActive)
             .on('change', change => { if (!change.newValue) rtpDelegate.stopAll(); });
         const checkWebRTCStreaming = () => {

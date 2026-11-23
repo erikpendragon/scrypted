@@ -10,6 +10,7 @@ import { createSecureVideoController, secureVideoCmafEnabled } from './camera/ca
 import { createCameraStreamingDelegate } from './camera/camera-streaming';
 import { FORCE_OPUS } from './camera/camera-utils';
 import { createHomeKitWebRTCDelegate, selectHomeKitRemoteTier } from './camera/camera-webrtc';
+import packageJson from '../../package.json';
 import { makeAccessory, mergeOnOffDevicesByType } from './common';
 
 const { deviceManager, systemManager } = sdk;
@@ -201,7 +202,15 @@ addSupportedType({
             ? createSecureVideoController(accessory, delegate.handleSnapshotRequest, console, recordingDelegate,
                 tiers => createMultiTierRtpDelegate(device, tiers, console, storage),
                 tiers => createHomeKitWebRTCDelegate(systemManager.getDeviceById<RTCSignalingChannel>(device.id), console, selectHomeKitRemoteTier(tiers)),
-                device.resolution)
+                device.resolution,
+                {
+                    state: {
+                        load: () => JSON.parse(storage.getItem('hksv3CmafUploadState') || '{}'),
+                        save: state => storage.setItem('hksv3CmafUploadState', JSON.stringify(state)),
+                    },
+                    userAgent: `HKSV/3.0 Scrypted-HomeKit/${packageJson.version} (${[device.info?.manufacturer, device.info?.model, device.info?.firmware]
+                        .map(value => (value || 'unknown').replace(/[;()]/g, ' ')).join('; ')})`,
+                })
             : new CameraController({
                 cameraStreamCount: 8,
                 delegate,
@@ -220,7 +229,7 @@ addSupportedType({
         if (controller instanceof SecureVideoController) {
             console.log('HomeKit Secure Video 3 multi-tier RTP, SFrame WebRTC, and HDS recording enabled.');
             if (secureVideoCmafEnabled)
-                console.log('HSV3 CMAF services enabled for diagnostics; clip production is not implemented.');
+                console.log('HomeKit Secure Video 3 CMAF clip upload enabled.');
             // logSecureVideoRequests(accessory, controller, console);
         }
 
