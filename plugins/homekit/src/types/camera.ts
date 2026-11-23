@@ -113,6 +113,12 @@ addSupportedType({
         const isRecordingEnabled = device.interfaces.includes(ScryptedInterface.MotionSensor);
 
         let configuration: CameraRecordingConfiguration;
+        // the hub mirrors the Home app's "Record Audio" switch into RecordingAudioActive
+        const recordAudio = () => {
+            const value = controller?.recordingManagement?.recordingManagementService
+                .getCharacteristic(Characteristic.RecordingAudioActive).value;
+            return value === undefined || value === null ? true : !!value;
+        };
         const openRecordingStreams = new Map<number, AsyncGenerator<RecordingPacket>>();
         if (isRecordingEnabled || secureVideo3) {
             recordingDelegate = {
@@ -121,7 +127,7 @@ addSupportedType({
                 },
                 handleRecordingStreamRequest(streamId: number): AsyncGenerator<RecordingPacket> {
                     const ret = handleFragmentsRequests(streamId, device, configuration, console, homekitPlugin, 
-                        () => openRecordingStreams.has(streamId));
+                        () => openRecordingStreams.has(streamId), recordAudio);
                     openRecordingStreams.set(streamId, ret);
                     return ret;
                 },

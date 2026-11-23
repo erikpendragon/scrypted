@@ -116,7 +116,7 @@ async function checkMp4StartsWithKeyFrame(console: Console, mp4: Buffer) {
 }
 
 export async function* handleFragmentsRequests(streamId: number, device: ScryptedDevice & VideoCamera & MotionSensor & AudioSensor,
-    configuration: CameraRecordingConfiguration, console: Console, homekitPlugin: HomeKitPlugin, isOpen: () => boolean): AsyncGenerator<RecordingPacket> {
+    configuration: CameraRecordingConfiguration, console: Console, homekitPlugin: HomeKitPlugin, isOpen: () => boolean, recordAudio: () => boolean = () => true): AsyncGenerator<RecordingPacket> {
 
     // homekitPlugin.storageSettings.values.lastKnownHomeHub = connection.remoteAddress;
 
@@ -143,6 +143,10 @@ export async function* handleFragmentsRequests(streamId: number, device: Scrypte
     });
     const ffmpegInput = JSON.parse((await mediaManager.convertMediaObjectToBuffer(media, ScryptedMimeTypes.FFmpegInput)).toString()) as FFmpegInput;
     const noAudio = ffmpegInput.mediaStreamOptions && ffmpegInput.mediaStreamOptions.audio === null;
+    // "Record Audio" off in the Home app: replace the camera's audio with the silent track.
+    const muteAudio = !noAudio && !recordAudio();
+    if (muteAudio)
+        console.log(device.name, 'recording audio is off in Home, recording silence');
     const audioCodec = ffmpegInput.mediaStreamOptions?.audio?.codec;
     const videoCodec = ffmpegInput.mediaStreamOptions?.video?.codec;
 
@@ -152,7 +156,8 @@ export async function* handleFragmentsRequests(streamId: number, device: Scrypte
     const needsFFmpeg = debugMode.video || debugMode.video
         || !ffmpegInput.url.startsWith('tcp://')
         || ffmpegInput.container !== 'mp4'
-        || noAudio;
+        || noAudio
+        || muteAudio;
 
     if (debugMode.video || debugMode.video)
         transcodingDebugModeWarning();
@@ -186,14 +191,15 @@ export async function* handleFragmentsRequests(streamId: number, device: Scrypte
             inputArguments.push('-c:a', 'libopus');
         inputArguments.push(...ffmpegInput.inputArguments);
 
-        if (noAudio) {
-            console.log(device.name, 'adding dummy audio track');
+        if (noAudio || muteAudio) {
+            if (noAudio)
+                console.log(device.name, 'adding dummy audio track');
             const silence = path.resolve(process.env.SCRYPTED_PLUGIN_VOLUME, 'zip/unzipped/fs/silence.mp4');
             inputArguments.push('-stream_loop', '-1', '-i', silence);
         }
 
         let audioArgs: string[];
-        if (!noAudio && (isDefinitelyNotAAC || debugMode.audio)) {
+        if (!noAudio && !muteAudio && (isDefinitelyNotAAC || debugMode.audio)) {
             if (!debugMode.audio)
                 console.warn('Recording audio is not explicitly AAC, forcing transcoding. Setting audio output to AAC is recommended.', audioCodec);
 
@@ -228,6 +234,8 @@ export async function* handleFragmentsRequests(streamId: number, device: Scrypte
         }
 
         const videoArgs: string[] = [];
+        if (muteAudio)
+            videoArgs.push('-map', '0:v:0', '-map', '1:a:0');
         if (debugMode.video) {
             if (debugMode.video) {
                 videoArgs.push(...getDebugModeH264EncoderArgs());
