@@ -9,7 +9,7 @@ import { handleFragmentsRequests, iframeIntervalSeconds } from './camera/camera-
 import { createSecureVideoController, secureVideoCmafEnabled } from './camera/camera-secure-video';
 import { createCameraStreamingDelegate } from './camera/camera-streaming';
 import { FORCE_OPUS } from './camera/camera-utils';
-import { createHomeKitWebRTCDelegate } from './camera/camera-webrtc';
+import { createHomeKitWebRTCDelegate, selectHomeKitRemoteTier } from './camera/camera-webrtc';
 import { makeAccessory, mergeOnOffDevicesByType } from './common';
 
 const { deviceManager, systemManager } = sdk;
@@ -200,7 +200,7 @@ addSupportedType({
         const controller = secureVideo3
             ? createSecureVideoController(accessory, delegate.handleSnapshotRequest, console, recordingDelegate,
                 tiers => createMultiTierRtpDelegate(device, tiers, console, storage),
-                tiers => createHomeKitWebRTCDelegate(systemManager.getDeviceById<RTCSignalingChannel>(device.id), console, tiers[0]),
+                tiers => createHomeKitWebRTCDelegate(systemManager.getDeviceById<RTCSignalingChannel>(device.id), console, selectHomeKitRemoteTier(tiers)),
                 device.resolution)
             : new CameraController({
                 cameraStreamCount: 8,

@@ -27,31 +27,80 @@ export function filterHomeKitOfferCodecs(sdp: string) {
     return parsed.toSdp().trimEnd() + '\r\n';
 }
 
+// Remote (relayed) live view: the iPhone rejects a stream that exceeds the
+// cellular link cap it reports (downlinkBitrateCap was about 1.08 Mbit/s in testing),
+// with "Stream group has no valid streams". Advertise a modest tier instead of
+// the top recording tier.
+export const HOMEKIT_REMOTE_MAX_HEIGHT = 720;
+export const HOMEKIT_REMOTE_MAX_BITRATE = 800000;
+
+export function selectHomeKitRemoteTier(tiers: Pick<SecureVideoVideoTier, 'width' | 'height' | 'frameRate' | 'peakBitrate'>[]) {
+    const sorted = [...tiers].sort((a, b) => b.height - a.height);
+    const tier = sorted.find(t => t.height <= HOMEKIT_REMOTE_MAX_HEIGHT) || sorted[sorted.length - 1];
+    return {
+        width: tier.width,
+        height: tier.height,
+        frameRate: tier.frameRate,
+        peakBitrate: Math.min(tier.peakBitrate, HOMEKIT_REMOTE_MAX_BITRATE / 1000),
+    };
+}
+
+const HOMEKIT_HEVC_FMTP = 'profile-id=1;tier-flag=0;level-id=153;tx-mode=SRST';
+
+// Offer shape that the Apple relay accepted for remote live view (same shape as
+// camera.ui / HAP-NodeJS PR 1132): opus-only audio, HEVC fmtp, b=AS + b=TIAS,
+// an SDP-only rid extmap with a single send rid carrying the tier limits,
+// simulcast send, and rtcp-fb limited to nack/pli/fir. Which of these lines are
+// individually required was not isolated; the set as a whole works.
 export function addHomeKitVideoMetadata(sdp: string, tier: Pick<SecureVideoVideoTier, 'width' | 'height' | 'frameRate' | 'peakBitrate'>) {
     const parsed = parseSdp(sdp);
     const video = parsed.msections.find(section => section.type === 'video');
     if (!video)
         throw new Error('HomeKit WebRTC offer is missing video');
 
-    // Keep the RID advertisement in HAP signaling without configuring a sender
-    // encoding: sending the RID RTP extension broke remote playback.
-    // Omitting the entire SDP RID line also failed to load remote video.
-    if (!video.lines.some(line => /^a=rid:\S+ send(?:\s|$)/.test(line)))
-        video.lines.push('a=rid:1 send');
-    // Removing these four constraints together broke remote playback, while
-    // removing b=AS/b=TIAS did not. Individual constraint requirements remain
-    // untested; retain the working set independently of bandwidth/extmap lines.
+    const usedExtmapIds = new Set<number>();
+    for (const section of parsed.msections) {
+        for (const line of section.lines) {
+            const m = /^a=extmap:(\d+)/.exec(line);
+            if (m)
+                usedExtmapIds.add(Number(m[1]));
+        }
+    }
+
+    for (const section of parsed.msections) {
+        if (section.type !== 'audio')
+            continue;
+        const opus = new Set(section.lines
+            .map(line => /^a=rtpmap:(\d+) opus\//i.exec(line)?.[1])
+            .filter(Boolean));
+        if (!opus.size)
+            continue;
+        const mline = section.lines[0].split(/\s+/);
+        section.lines[0] = [...mline.slice(0, 3), ...mline.slice(3).filter(pt => opus.has(pt))].join(' ');
+        section.lines = section.lines.filter(line => {
+            const attribute = /^a=(?:rtpmap|fmtp|rtcp-fb):(\d+)(?:\s|$)/.exec(line);
+            return !attribute || opus.has(attribute[1]);
+        });
+    }
+
     const bitrate = tier.peakBitrate * 1000;
-    video.lines = video.lines.map(line => {
-        const rid = /^(a=rid:\S+ send)(?:\s+(.*))?$/.exec(line);
-        if (!rid)
-            return line;
-        const constraints = (rid[2] || '').split(';').filter(value => value
-            && !/^(max-width|max-height|max-fps|max-br)=/.test(value));
-        constraints.push(`max-width=${tier.width}`, `max-height=${tier.height}`,
-            `max-fps=${tier.frameRate}`, `max-br=${bitrate}`);
-        return `${rid[1]} ${constraints.join(';')}`;
-    });
+    const pt = video.lines[0].split(/\s+/)[3];
+    video.lines = video.lines.filter(line => !line.startsWith('a=rid:')
+        && !line.startsWith('a=simulcast:')
+        && !/^b=(AS|TIAS):/.test(line)
+        && !/^a=rtcp-fb:\d+ (transport-cc|goog-remb)\s*$/.test(line)
+        && !line.startsWith(`a=fmtp:${pt} `));
+    const rtpmap = video.lines.findIndex(line => line.startsWith(`a=rtpmap:${pt} `));
+    video.lines.splice(rtpmap + 1, 0, `a=fmtp:${pt} ${HOMEKIT_HEVC_FMTP}`);
+    const connection = video.lines.findIndex(line => line.startsWith('c='));
+    video.lines.splice(connection < 0 ? 1 : connection + 1, 0,
+        `b=AS:${Math.round(bitrate / 1000)}`, `b=TIAS:${bitrate}`);
+    let extmapId = 1;
+    while (usedExtmapIds.has(extmapId) && extmapId < 14)
+        extmapId++;
+    video.lines.push(`a=extmap:${extmapId} urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id`);
+    video.lines.push(`a=rid:1 send max-width=${tier.width};max-height=${tier.height};max-fps=${tier.frameRate};max-br=${bitrate}`);
+    video.lines.push('a=simulcast:send 1');
     return parsed.toSdp().trimEnd() + '\r\n';
 }
 
@@ -184,15 +233,17 @@ export function createHomeKitWebRTCDelegate(camera: RTCSignalingChannel, console
             (async () => {
                 try {
                     const control = await camera.startRTCSignalingSession(signaling);
-                    await control.setPlayback({
-                        audio: 'on-demand',
-                        video: false,
-                    });
                     if (sessions.get(id) !== session) {
                         await control?.endSession();
                         return;
                     }
                     session.control = control;
+                    // A setPlayback failure must not tear down a session Apple is
+                    // still negotiating.
+                    control.setPlayback({
+                        audio: 'on-demand',
+                        video: false,
+                    }).catch(e => console.log('HSV3 WebRTC setPlayback failed, session kept:', e?.message));
                     for await (const update of session.receiveKeys.queue) {
                         if (sessions.get(id) !== session)
                             break;
@@ -244,9 +295,13 @@ export function createHomeKitWebRTCDelegate(camera: RTCSignalingChannel, console
             console.log('HSV3 WebRTC answer forwarded');
         },
         async handleReoffer(request) {
-            console.warn(request);
+            console.log('HSV3 WebRTC reoffer');
             const session = sessions.get(request.sessionIdentifier);
-            await session.control!.setRemoteDescription({
+            // Apple can reoffer (talkback) before startRTCSignalingSession has
+            // returned the control.
+            if (!session?.control)
+                throw new Error('HomeKit WebRTC reoffer before session control');
+            await session.control.setRemoteDescription({
                 type: 'offer',
                 sdp: request.sdpOffer,
             }, );
@@ -254,7 +309,7 @@ export function createHomeKitWebRTCDelegate(camera: RTCSignalingChannel, console
             session.control.setPlayback({
                 audio: 'on-demand',
                 video: false,
-            });
+            }).catch(() => { });
             return {
                 sdpAnswer: response.sdp,
             }
@@ -273,6 +328,7 @@ export function createHomeKitWebRTCDelegate(camera: RTCSignalingChannel, console
                 'removed:', update.receiveKIDsToRemove.length);
         },
         async handleEndSession(sessionIdentifier) {
+            console.log('HSV3 WebRTC end session from controller');
             await end(sessionIdentifier);
         },
         stopAll() {
